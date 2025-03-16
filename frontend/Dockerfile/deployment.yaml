@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation-api-deployment
+  labels:
+    app: recommendation-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: recommendation-api
+  template:
+    metadata:
+      labels:
+        app: recommendation-api
+    spec:
+      containers:
+      - name: recommendation-api
+        image: your-repo/recommendation-api:latest  # Replace with your actual image
+        ports:
+        - containerPort: 8000
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        # Optionally, add resource limits/requests
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
