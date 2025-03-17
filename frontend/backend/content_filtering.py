@@ -26,12 +26,12 @@ class ContentBasedRecommender:
         Initialize the content-based recommender system.
 
         Args:
-            movies_file_path (str): Path to the movies data file.
-            use_bert (bool): If True, use BERT-based embeddings.
-            use_tfidf (bool): If True, use TF-IDF; otherwise, use CountVectorizer.
+            movies_file_path (str): Relative or absolute path to the movies data file.
+            use_bert (bool): If True, use BERT-based embeddings (requires SentenceTransformer).
+            use_tfidf (bool): If True, use TF-IDF vectorization; otherwise, use CountVectorizer.
         """
         self.movies_file_path = movies_file_path
-        self.movies: pd.DataFrame = pd.DataFrame()
+        self.movies: pd.DataFrame = self._load_movies()
         self.vectorizer: Optional[object] = None
         self.count_matrix: Optional[np.ndarray] = None
         self.cosine_sim: Optional[np.ndarray] = None
@@ -40,48 +40,77 @@ class ContentBasedRecommender:
         self.bert_model = None
 
         if self.use_bert:
-            self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("BERT-based embeddings enabled using SentenceTransformer.")
+            try:
+                self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("BERT-based embeddings enabled using SentenceTransformer.")
+            except Exception as e:
+                logger.error(f"Error initializing BERT model: {e}")
+                self.use_bert = False
 
         self._initialize_system()
 
     def _initialize_system(self) -> None:
-        """Initialize the recommendation system by loading data and computing the similarity matrix."""
-        self.movies = self._load_movies()
+        """Load movie data, create a combined text field, and compute the similarity matrix."""
         if self.movies.empty:
             logger.error("Movies dataset is empty. Check the movies file and its contents.")
-        else:
-            # Create an enriched combined text column with title and genres (add additional fields if needed)
-            if 'genres' in self.movies.columns:
-                self.movies['combined_text'] = (
-                        self.movies['title'].astype(str) + " " +
-                        self.movies['genres'].astype(str)
-                )
-            else:
-                self.movies['combined_text'] = self.movies['title'].astype(str)
+            self.cosine_sim = None
+            return
 
-            # Compute similarity using BERT embeddings if enabled; otherwise use vectorization.
-            if self.use_bert:
-                self._compute_bert_embeddings()
-            else:
-                self._compute_similarity_matrix()
+        if "title" not in self.movies.columns:
+            logger.error("Movies dataset does not contain a 'title' column.")
+            self.cosine_sim = None
+            return
+
+        # Create a combined text column using title and genres if available.
+        if 'genres' in self.movies.columns:
+            self.movies['combined_text'] = self.movies['title'].astype(str) + " " + self.movies['genres'].astype(str)
+        else:
+            self.movies['combined_text'] = self.movies['title'].astype(str)
+
+        if self.movies['combined_text'].isnull().all() or self.movies['combined_text'].str.strip().eq("").all():
+            logger.error("Combined text data is missing or empty in the dataset.")
+            self.cosine_sim = None
+            return
+
+        # Compute similarity using BERT embeddings if enabled; otherwise use vectorization.
+        if self.use_bert:
+            self._compute_bert_embeddings()
+        else:
+            self._compute_similarity_matrix()
 
     def _load_movies(self) -> pd.DataFrame:
         """
-        Load the standard MovieLens 100k 'u.item' file with 24 columns.
+        Load the MovieLens 'u.item' file (expected to have 24 columns) and combine genre flags.
+        This method attempts multiple candidate paths if a relative path is provided.
 
-        The file has the following columns:
-            0) movie_id
-            1) title
-            2) release_date
-            3) video_release_date
-            4) imdb_url
-            5-23) 19 binary genre flags.
-
-        This function combines columns 5 to 23 into a single 'genres' string.
+        Returns:
+            pd.DataFrame: DataFrame with columns: movie_id, title, release_date, imdb_url, genres.
         """
+        candidate_paths = []
+        if os.path.isabs(self.movies_file_path):
+            candidate_paths.append(self.movies_file_path)
+        else:
+            # Candidate 1: Relative to current working directory.
+            candidate_paths.append(os.path.join(os.getcwd(), self.movies_file_path))
+            # Candidate 2: Relative to this file's directory.
+            candidate_paths.append(os.path.join(os.path.dirname(__file__), self.movies_file_path))
+            # Candidate 3: Assuming tests are run from frontend/backend/tests,
+            # then "../data/u.item" should be the correct path.
+            candidate_paths.append(os.path.join(os.path.dirname(__file__), "..", "data", os.path.basename(self.movies_file_path)))
+            # Candidate 4: If working directory is project root ("frontend")
+            candidate_paths.append(os.path.join(os.getcwd(), "backend", "data", os.path.basename(self.movies_file_path)))
+
+        full_path = None
+        for path in candidate_paths:
+            if os.path.exists(path):
+                full_path = os.path.abspath(path)
+                break
+
+        if full_path is None:
+            logger.error(f"Movies file not found in any of the following paths: {candidate_paths}")
+            return pd.DataFrame()
+
         try:
-            # Define column names for all 24 columns
             col_names = [
                 "movie_id", "title", "release_date", "video_release_date", "imdb_url",
                 "unknown", "Action", "Adventure", "Animation", "Children", "Comedy", "Crime",
@@ -89,7 +118,7 @@ class ContentBasedRecommender:
                 "Romance", "Sci-Fi", "Thriller", "War", "Western"
             ]
             df = pd.read_csv(
-                self.movies_file_path,
+                full_path,
                 sep="|",
                 encoding="latin-1",
                 header=None,
@@ -103,23 +132,17 @@ class ContentBasedRecommender:
                 "Romance", "Sci-Fi", "Thriller", "War", "Western"
             ]
 
-            # Combine binary genre flags into a single genres string.
-            def combine_genres(row):
-                active_genres = []
-                for g in genre_cols:
-                    if row[g] == 1:
-                        active_genres.append(g)
+            def combine_genres(row) -> str:
+                active_genres = [g for g in genre_cols if row.get(g, 0) == 1]
                 return "|".join(active_genres) if active_genres else ""
 
             df["genres"] = df.apply(combine_genres, axis=1)
-
-            # Keep only the needed columns: movie_id, title, release_date, imdb_url, genres
             df = df[["movie_id", "title", "release_date", "imdb_url", "genres"]]
-            logger.info(f"Loaded {len(df)} movies from {self.movies_file_path}")
+            logger.info(f"Loaded {len(df)} movies from {full_path}")
             return df
 
         except Exception as e:
-            logger.error(f"Error loading movies from {self.movies_file_path}: {e}")
+            logger.error(f"Error loading movies from {full_path}: {e}")
             return pd.DataFrame()
 
     def _compute_similarity_matrix(self) -> None:
@@ -141,12 +164,12 @@ class ContentBasedRecommender:
             self.cosine_sim = None
 
     def _compute_bert_embeddings(self) -> None:
-        """Compute cosine similarity matrix using BERT-based embeddings."""
+        """Compute the cosine similarity matrix using BERT-based embeddings."""
         try:
             if "combined_text" not in self.movies.columns or self.movies["combined_text"].isnull().all():
                 raise ValueError("Combined text data is missing or empty in the dataset.")
-            # Generate embeddings using the SentenceTransformer model
-            embeddings = self.bert_model.encode(self.movies["combined_text"].tolist(), show_progress_bar=True)
+            texts = self.movies["combined_text"].tolist()
+            embeddings = self.bert_model.encode(texts, show_progress_bar=True)
             self.cosine_sim = cosine_similarity(embeddings, embeddings)
             logger.info("Cosine similarity matrix computed using BERT embeddings.")
         except Exception as e:
@@ -162,7 +185,7 @@ class ContentBasedRecommender:
             top_n (int, optional): The number of similar movies to return.
 
         Returns:
-            List[Dict]: A list of dictionaries, each containing details of a similar movie.
+            List[Dict]: A list of dictionaries with movie details and similarity score.
         """
         if self.cosine_sim is None:
             logger.error("Cosine similarity matrix not computed. Cannot process similar movies request.")
@@ -175,7 +198,7 @@ class ContentBasedRecommender:
             movie_idx = movie_indices[0]
             sim_scores = list(enumerate(self.cosine_sim[movie_idx]))
             sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-            # Exclude the movie itself
+            # Exclude the movie itself and limit to top_n recommendations
             sim_scores = sim_scores[1:top_n + 1]
 
             similar_movies_list: List[Dict] = []
@@ -192,13 +215,13 @@ class ContentBasedRecommender:
 
     def _get_movie_details(self, movie: pd.Series) -> Optional[Dict]:
         """
-        Extract relevant details from a movie Series.
+        Extract relevant details from a movie record.
 
         Args:
-            movie (pd.Series): Pandas Series containing movie data.
+            movie (pd.Series): A row from the movies DataFrame.
 
         Returns:
-            Optional[Dict]: Dictionary with movie details or None if an error occurs.
+            Optional[Dict]: Dictionary of movie details or None on error.
         """
         try:
             return {
@@ -208,18 +231,18 @@ class ContentBasedRecommender:
                 "genres": movie.genres,
             }
         except Exception as e:
-            logger.error(f"Error getting movie details: {e}")
+            logger.error(f"Error extracting movie details: {e}")
             return None
 
     def get_movie_by_id(self, movie_id: int) -> Optional[Dict]:
         """
-        Get details for a specific movie by ID.
+        Retrieve details for a specific movie by its ID.
 
         Args:
-            movie_id (int): Movie ID to look up.
+            movie_id (int): The movie ID to lookup.
 
         Returns:
-            Optional[Dict]: Movie details or None if not found.
+            Optional[Dict]: A dictionary with movie details or None if not found.
         """
         try:
             movie_rows = self.movies[self.movies["movie_id"] == movie_id]
@@ -234,11 +257,15 @@ class ContentBasedRecommender:
 
 
 if __name__ == "__main__":
-    # Example usage:
-    # Set use_bert=True to use BERT-based embeddings; otherwise, it will use TF-IDF/CountVectorizer.
-    recommender = ContentBasedRecommender("data/u.item", use_bert=True, use_tfidf=False)
-    example_movie_id = 1
-    similar_movies = recommender.get_similar_movies(example_movie_id, top_n=5)
-    if similar_movies:
-        for movie in similar_movies:
-            print(f"Title: {movie['title']}, Similarity Score: {movie['similarity_score']:.4f}")
+    try:
+        # Example usage: Create a recommender using TF-IDF vectorization.
+        recommender = ContentBasedRecommender("backend/data/u.item", use_bert=False, use_tfidf=True)
+        example_movie_id = 1
+        similar_movies = recommender.get_similar_movies(example_movie_id, top_n=5)
+        if similar_movies:
+            for movie in similar_movies:
+                print(f"Title: {movie['title']}, Similarity Score: {movie['similarity_score']:.4f}")
+        else:
+            print("No similar movies found.")
+    except Exception as e:
+        logger.error(f"ContentBasedRecommender encountered an error: {e}")

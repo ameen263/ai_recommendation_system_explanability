@@ -1,3 +1,9 @@
+import os
+import sys
+
+# Add the project root (two levels up) to sys.path.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 import unittest
 from unittest.mock import patch
 from backend.hybrid_recommend import HybridRecommender, ContentBasedRecommender
@@ -88,5 +94,5 @@ class HybridRecommenderTests(unittest.TestCase):
             self.assertIsInstance(rec, tuple)
             self.assertEqual(len(rec), 3)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

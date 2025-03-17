@@ -1,0 +1,10 @@
+2025-03-17 22:48:37,257 - ERROR - Error loading ratings data from non_existent_u.data: File not found
+2025-03-17 22:48:37,267 - INFO - Successfully loaded ratings data from dummy_u.data
+2025-03-17 22:48:37,294 - ERROR - Error loading users from non_existent_u.user: File not found
+2025-03-17 22:48:37,299 - INFO - Successfully loaded users from dummy_u.user
+2025-03-17 22:48:37,335 - INFO - Successfully merged datasets with 4 records after deduplication.
+2025-03-17 22:49:25,116 - ERROR - Error loading ratings data from non_existent_u.data: File not found
+2025-03-17 22:49:25,121 - INFO - Successfully loaded ratings data from dummy_u.data
+2025-03-17 22:49:25,122 - ERROR - Error loading users from non_existent_u.user: File not found
+2025-03-17 22:49:25,124 - INFO - Successfully loaded users from dummy_u.user
+2025-03-17 22:49:25,133 - INFO - Successfully merged datasets with 4 records after deduplication.

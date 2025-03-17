@@ -1,10 +1,11 @@
 import os
+import sys
 import logging
+import pickle
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 from pyspark.ml.recommendation import ALS
 from pyspark.ml.evaluation import RegressionEvaluator
-import pickle
 
 # Configure logging
 logging.basicConfig(
@@ -13,9 +14,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 def main():
-    # Initialize Spark session
+    # Initialize Spark session with proper warehouse directory and configurations.
     spark = SparkSession.builder \
         .appName("DistributedTrainingALS") \
         .config("spark.sql.warehouse.dir", "file:/tmp/spark-warehouse") \
@@ -23,34 +23,32 @@ def main():
         .getOrCreate()
 
     try:
-        # Derive the data file path relative to this script's directory
+        # Derive the data file path relative to this script's directory.
         script_dir = os.path.dirname(os.path.abspath(__file__))
         data_path = os.path.join(script_dir, "data", "merged_data.csv")
 
         logger.info(f"Loading data from {data_path}...")
-
-        # Check if file exists
         if not os.path.exists(data_path):
             logger.error(f"Data file not found: {data_path}")
-            return
+            sys.exit(1)
 
-        # Adjust 'sep' based on your CSV format (tab or comma)
+        # Read CSV with header and schema inference enabled.
         df = spark.read.csv(
             data_path,
             sep="\t",
             header=True,
-            inferSchema=False
+            inferSchema=True
         )
 
-        # Convert columns to appropriate types
+        # Explicitly cast columns to ensure correct types.
         df = df.withColumn("user_id", col("user_id").cast("integer")) \
-            .withColumn("movie_id", col("movie_id").cast("integer")) \
-            .withColumn("rating", col("rating").cast("float"))
+               .withColumn("movie_id", col("movie_id").cast("integer")) \
+               .withColumn("rating", col("rating").cast("float"))
 
-        # Split data
+        # Split data into training and testing sets.
         train, test = df.randomSplit([0.8, 0.2], seed=42)
 
-        # ALS model setup
+        # Set up the ALS model with parameters.
         als = ALS(
             userCol="user_id",
             itemCol="movie_id",
@@ -64,10 +62,10 @@ def main():
             seed=42
         )
 
-        # Fit ALS model
+        # Fit the ALS model on the training data.
         model = als.fit(train)
 
-        # Evaluate with RMSE
+        # Evaluate the model using RMSE on the test set.
         predictions = model.transform(test)
         evaluator = RegressionEvaluator(
             metricName="rmse",
@@ -77,13 +75,13 @@ def main():
         rmse = evaluator.evaluate(predictions)
         logger.info(f"Distributed ALS model RMSE: {rmse:.4f}")
 
-        # Directory creation
+        # Create a directory for saving the model if it doesn't exist.
         model_save_path = os.path.join(script_dir, "models", "als_model")
         os.makedirs(model_save_path, exist_ok=True)
 
-        # Corrected model_params (Fixed Getter Calls)
+        # Build a dictionary of model parameters using getter methods.
         model_params = {
-            "rank": model.rank,
+            "rank": model.rank if hasattr(model, "rank") else als.getRank(),
             "maxIter": als.getMaxIter(),
             "regParam": als.getRegParam(),
             "userCol": als.getUserCol(),
@@ -95,13 +93,14 @@ def main():
             "rmse": rmse
         }
 
-        # Saving user/item factors and params
+        # Save the user and item factors as Parquet files.
         user_factors_path = os.path.join(model_save_path, "user_factors")
         item_factors_path = os.path.join(model_save_path, "item_factors")
 
         model.userFactors.write.mode("overwrite").format("parquet").save(f"file:{user_factors_path}")
         model.itemFactors.write.mode("overwrite").format("parquet").save(f"file:{item_factors_path}")
 
+        # Save the model parameters using pickle.
         params_path = os.path.join(model_save_path, "model_params.pkl")
         with open(params_path, 'wb') as f:
             pickle.dump(model_params, f)
@@ -110,9 +109,9 @@ def main():
 
     except Exception as e:
         logger.exception(f"An error occurred during distributed training: {e}")
+        sys.exit(1)
     finally:
         spark.stop()
-
 
 if __name__ == "__main__":
     main()

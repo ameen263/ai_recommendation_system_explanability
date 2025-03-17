@@ -1,5 +1,12 @@
+import os
+import sys
 import unittest
 import pandas as pd
+
+# Add the project root (two levels up) to sys.path.
+# Assuming test file is in frontend/backend/tests, then two levels up is the "frontend" folder.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 from backend.content_filtering import ContentBasedRecommender  # Import from backend
 
 class ContentFilteringTests(unittest.TestCase):
